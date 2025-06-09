@@ -7,49 +7,60 @@ initiate ownership transfers after a configurable timelock period.
 
 ```mermaid
 sequenceDiagram
+    participant Factory as VaultFactory
     participant Owner
     participant RecoveryKey
     participant Vault
     participant Anyone
     participant NewOwner
 
-    Note over Owner,NewOwner: Normal Operations
+    Note over Factory,NewOwner: Vault Deployment
+    Factory->>Vault: deployVault(owner, recoveryKey, timelock)
+    Vault-->>Factory: Store owner mapping
+    Factory-->>Owner: Vault deployed
+
+    Note over Factory,NewOwner: Normal Operations
     Owner->>Vault: deposit ETH
     Owner->>Vault: withdraw ETH
     Owner->>Vault: setRecoveryKey
     Owner->>Vault: setTimelock
 
-    Note over Owner,NewOwner: Recovery Process
+    Note over Factory,NewOwner: Recovery Process
     RecoveryKey->>Vault: initiateRecovery(newOwner)
     Vault-->>Vault: Set recovery request with timelock
     
-    Note over Owner,NewOwner: Timelock Period
+    Note over Factory,NewOwner: Timelock Period
     
     alt Owner cancels recovery
         Owner->>Vault: cancelRecovery()
         Vault-->>Vault: Clear recovery request
-    else Recovery key cancels
+    else Recoverer cancels recovery
         RecoveryKey->>Vault: cancelRecovery()
         Vault-->>Vault: Clear recovery request
     else Timelock expires
         Anyone->>Vault: executeRecovery()
         Vault-->>Vault: Transfer ownership to newOwner
+        Vault->>Factory: syncOwner(vault) - Automatic sync
+        Factory-->>Factory: Update ownership mapping
         Vault-->>NewOwner: Ownership transferred
     end
 
-    Note over Owner,NewOwner: Emergency Withdrawal (only when recovery is executable)
+    Note over Factory,NewOwner: Manual Factory Sync (if needed)
+    alt Owner changes outside recovery
+        Owner->>Vault: transferOwnership(newOwner)
+        Vault-->>NewOwner: Ownership transferred
+        Anyone->>Factory: syncOwner(vault) - Manual sync
+        Factory-->>Factory: Update ownership mapping
+    end
+
+    Note over Factory,NewOwner: Emergency Withdrawal (only when recovery is executable)
     alt Recovery is active AND timelock has expired
         RecoveryKey->>Vault: emergencyWithdraw(to, amount)
         Note right of Vault: Conditions:<br/>1. Recovery request exists<br/>2. block.timestamp >= executeAfter<br/>3. Only recovery key can call
+        Vault-->>Vault: Clear recovery request
         Vault-->>RecoveryKey: Transfer ETH to specified address
     end
 ```
-
-## Architecture
-
-- **ATimeLockRecovery**: Abstract base contract providing time-locked recovery functionality
-- **Vault**: Concrete implementation for ETH storage with recovery capabilities  
-- **VaultFactory**: Upgradeable factory for deploying vault instances with CREATE2
 
 ## Development
 

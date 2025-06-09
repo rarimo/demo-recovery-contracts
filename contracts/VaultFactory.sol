@@ -10,12 +10,13 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 
 import {Vault} from "./Vault.sol";
 
+import {IVaultFactory} from "./interfaces/IVaultFactory.sol";
+
 /**
  * @title VaultFactory
  * @notice Factory contract for deploying Vault instances using CREATE2
- * @dev Uses UUPS upgradeable pattern for factory upgradeability
  */
-contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+contract VaultFactory is IVaultFactory, Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /// @notice Implementation address for Vault contracts
     address public vaultImplementation;
 
@@ -65,7 +66,7 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             payable(_deploy2(vaultImplementation, bytes32(uint256(uint160(owner_)))))
         );
 
-        vault.__Vault_init(owner_, recoveryKey_, timelock_);
+        vault.__Vault_init(owner_, recoveryKey_, timelock_, address(this));
 
         vaultsByOwner[owner_] = address(vault);
         vaultToOwner[address(vault)] = owner_;
@@ -73,6 +74,24 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         emit VaultDeployed(address(vault), owner_);
 
         return address(vault);
+    }
+
+    function syncOwner(address vault_) external {
+        address oldOwner_ = vaultToOwner[vault_];
+        require(oldOwner_ != address(0), VaultNotFound());
+
+        address newOwner_ = Vault(payable(vault_)).owner();
+
+        if (newOwner_ != oldOwner_) {
+            if (vaultsByOwner[oldOwner_] == vault_) {
+                vaultsByOwner[oldOwner_] = address(0);
+            }
+
+            vaultsByOwner[newOwner_] = vault_;
+            vaultToOwner[vault_] = newOwner_;
+
+            emit VaultOwnerChanged(vault_, newOwner_);
+        }
     }
 
     /**

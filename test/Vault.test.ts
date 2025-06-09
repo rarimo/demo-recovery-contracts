@@ -81,7 +81,7 @@ describe("Vault", () => {
 
     it("should not allow double initialization", async () => {
       await expect(
-        vault.__Vault_init(OWNER.address, RECOVERY_KEY.address, DEFAULT_TIMELOCK),
+        vault.__Vault_init(OWNER.address, RECOVERY_KEY.address, DEFAULT_TIMELOCK, vaultFactory.target),
       ).to.be.revertedWithCustomError(vault, "InvalidInitialization");
     });
   });
@@ -486,6 +486,7 @@ describe("Vault", () => {
         expect(await deployedVault.owner()).to.equal(USER1.address);
         expect(await deployedVault.recoveryKey()).to.equal(USER2.address);
         expect(await deployedVault.timelock()).to.equal(CUSTOM_TIMELOCK);
+        expect(await deployedVault.factory()).to.equal(await vaultFactory.getAddress());
 
         expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
         expect(await vaultFactory.vaultToOwner(vaultAddress!)).to.equal(USER1.address);
@@ -510,6 +511,76 @@ describe("Vault", () => {
         const actualAddress = receipt?.logs[0]?.address;
 
         expect(actualAddress).to.equal(predictedAddress);
+      });
+    });
+
+    describe("Factory Sync Functionality", () => {
+      let deployedVault: Vault;
+      let vaultAddress: string;
+
+      beforeEach(async () => {
+        const tx = await vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK);
+        const receipt = await tx.wait();
+        vaultAddress = receipt?.logs[0]?.address!;
+        deployedVault = await ethers.getContractAt("Vault", vaultAddress);
+      });
+
+      it("should automatically sync factory ownership records on recovery execution", async () => {
+        // Initiate recovery
+        await deployedVault.connect(USER2).initiateRecovery(NEW_OWNER.address);
+
+        // Advance time past timelock
+        await time.increase(CUSTOM_TIMELOCK + 1);
+
+        // Execute recovery
+        await expect(deployedVault.executeRecovery())
+          .to.emit(deployedVault, "RecoveryExecuted")
+          .withArgs(OWNER.address, NEW_OWNER.address);
+
+        // Check that vault ownership changed
+        expect(await deployedVault.owner()).to.equal(NEW_OWNER.address);
+
+        // Check that factory records were automatically synced
+        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(ethers.ZeroAddress);
+        expect(await vaultFactory.vaultsByOwner(NEW_OWNER.address)).to.equal(vaultAddress);
+        expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(NEW_OWNER.address);
+      });
+
+      it("should allow manual sync of vault ownership", async () => {
+        // Manually transfer ownership (not through recovery)
+        await deployedVault.connect(USER1).transferOwnership(NEW_OWNER.address);
+
+        // Factory records should be stale initially
+        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
+        expect(await vaultFactory.vaultsByOwner(NEW_OWNER.address)).to.equal(ethers.ZeroAddress);
+        expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(USER1.address);
+
+        // Sync manually
+        await expect(vaultFactory.syncOwner(vaultAddress))
+          .to.emit(vaultFactory, "VaultOwnerChanged")
+          .withArgs(vaultAddress, NEW_OWNER.address);
+
+        // Factory records should now be updated
+        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(ethers.ZeroAddress);
+        expect(await vaultFactory.vaultsByOwner(NEW_OWNER.address)).to.equal(vaultAddress);
+        expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(NEW_OWNER.address);
+      });
+
+      it("should revert sync for non-existent vault", async () => {
+        const nonExistentVault = "0x1234567890123456789012345678901234567890";
+        await expect(vaultFactory.syncOwner(nonExistentVault)).to.be.revertedWithCustomError(
+          vaultFactory,
+          "VaultNotFound",
+        );
+      });
+
+      it("should handle sync when owner hasn't changed", async () => {
+        // Sync should not emit event if owner hasn't changed
+        await expect(vaultFactory.syncOwner(vaultAddress)).to.not.emit(vaultFactory, "VaultOwnerChanged");
+
+        // Factory records should remain the same
+        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
+        expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(USER1.address);
       });
     });
 

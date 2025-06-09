@@ -26,7 +26,7 @@ abstract contract ATimeLockRecovery is Initializable, OwnableUpgradeable {
 
     event RecoveryKeySet(address previousRecoveryKey, address newRecoveryKey);
     event RecoveryInitiated(address initiator, address newOwner, uint256 executeAfter);
-    event RecoveryExecuted(address recoveryKey, address newOwner);
+    event RecoveryExecuted(address executor, address newOwner);
     event RecoveryCanceled(address canceler);
     event TimelockUpdated(uint256 previousTimelock, uint256 newTimelock);
 
@@ -103,25 +103,7 @@ abstract contract ATimeLockRecovery is Initializable, OwnableUpgradeable {
     /**
      * @notice Execute the recovery if timelock has passed
      */
-    function executeRecovery() external virtual {
-        require(recoveryRequest.isActive, NoActiveRecovery());
-        require(
-            block.timestamp >= recoveryRequest.executeAfter,
-            RecoveryStillLocked(block.timestamp, recoveryRequest.executeAfter)
-        );
-
-        recoveryRequest.isActive = false;
-
-        address newOwner_ = recoveryRequest.newOwner;
-
-        // Clear the recovery request
-        delete recoveryRequest;
-
-        // Transfer ownership
-        _transferOwnership(newOwner_);
-
-        emit RecoveryExecuted(msg.sender, newOwner_);
-    }
+    function executeRecovery() external virtual;
 
     /**
      * @notice Cancel an active recovery request

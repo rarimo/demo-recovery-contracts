@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later
-pragma solidity ^0.8.20;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 import {ATimeLockRecovery} from "./ATimeLockRecovery.sol";
+
+import {IVaultFactory} from "./interfaces/IVaultFactory.sol";
 
 /**
  * @title Vault
@@ -13,11 +15,13 @@ import {ATimeLockRecovery} from "./ATimeLockRecovery.sol";
 contract Vault is ATimeLockRecovery {
     using Address for address payable;
 
+    /// @notice The factory contract that deployed this vault
+    address public factory;
+
     event Deposit(address indexed from, uint256 amount);
     event Withdrawal(address indexed to, uint256 amount);
     event EmergencyWithdrawal(address indexed to, uint256 amount);
 
-    error WithdrawalFailed();
     error InvalidAmount();
     error InvalidInitialOwner();
     error InvalidRecoveryKeyInit();
@@ -31,15 +35,19 @@ contract Vault is ATimeLockRecovery {
      * @param initialOwner_ The address that will be the initial owner of the vault
      * @param recoveryKey_ The address that can initiate recovery
      * @param timelock_ The timelock duration for recovery
+     * @param factory_ The factory contract that deployed this vault
      */
     function __Vault_init(
         address initialOwner_,
         address recoveryKey_,
-        uint256 timelock_
+        uint256 timelock_,
+        address factory_
     ) external initializer {
         require(initialOwner_ != address(0), InvalidInitialOwner());
         require(recoveryKey_ != address(0), InvalidRecoveryKeyInit());
         require(timelock_ != 0, InvalidTimelockInit());
+
+        factory = factory_;
 
         __ATimeLockRecovery_init(initialOwner_, recoveryKey_, timelock_);
     }
@@ -117,6 +125,8 @@ contract Vault is ATimeLockRecovery {
 
         to_.sendValue(amount_);
 
+        delete recoveryRequest;
+
         emit EmergencyWithdrawal(to_, amount_);
     }
 
@@ -135,5 +145,34 @@ contract Vault is ATimeLockRecovery {
      */
     function hasSufficientBalance(uint256 amount_) external view returns (bool) {
         return address(this).balance >= amount_;
+    }
+
+    /**
+     * @notice Execute the recovery if timelock has passed
+     * @dev Overrides parent function to add factory sync
+     */
+    function executeRecovery() external virtual override {
+        require(recoveryRequest.isActive, NoActiveRecovery());
+        require(
+            block.timestamp >= recoveryRequest.executeAfter,
+            RecoveryStillLocked(block.timestamp, recoveryRequest.executeAfter)
+        );
+
+        recoveryRequest.isActive = false;
+
+        address newOwner_ = recoveryRequest.newOwner;
+
+        // Clear the recovery request
+        delete recoveryRequest;
+
+        // Transfer ownership
+        _transferOwnership(newOwner_);
+
+        // Sync with factory if available
+        if (factory != address(0)) {
+            try IVaultFactory(factory).syncOwner(address(this)) {} catch {}
+        }
+
+        emit RecoveryExecuted(msg.sender, newOwner_);
     }
 }
