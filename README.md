@@ -23,7 +23,7 @@ sequenceDiagram
     RecoveryKey->>Vault: initiateRecovery(newOwner)
     Vault-->>Vault: Set recovery request with timelock
     
-    Note over Owner,NewOwner: Timelock Period (default 7 days)
+    Note over Owner,NewOwner: Timelock Period
     
     alt Owner cancels recovery
         Owner->>Vault: cancelRecovery()
