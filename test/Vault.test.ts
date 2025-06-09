@@ -59,9 +59,9 @@ describe("Vault", () => {
       expect(await vault.getBalance()).to.equal(0);
 
       const recoveryRequest = await vault.getRecoveryRequest();
-      expect(recoveryRequest.isActive).to.be.false;
-      expect(recoveryRequest.newOwner).to.equal(ethers.ZeroAddress);
-      expect(recoveryRequest.executeAfter).to.equal(0);
+      expect(recoveryRequest.isActive).to.be.true;
+      expect(recoveryRequest.newOwner).to.equal(OWNER.address);
+      expect(recoveryRequest.executeAfter).to.be.greaterThan(0);
     });
 
     it("should revert if initialized with zero initial owner", async () => {
@@ -259,6 +259,11 @@ describe("Vault", () => {
     });
 
     describe("initiateRecovery", () => {
+      beforeEach(async () => {
+        // Cancel the initial recovery request created during initialization
+        await vault.connect(OWNER).cancelRecovery();
+      });
+
       it("should allow recovery key to initiate recovery", async () => {
         const currentTime = await time.latest();
         const executeAfter = currentTime + DEFAULT_TIMELOCK;
@@ -293,6 +298,8 @@ describe("Vault", () => {
 
     describe("executeRecovery", () => {
       beforeEach(async () => {
+        // Cancel the initial recovery request and create a new one
+        await vault.connect(OWNER).cancelRecovery();
         await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
       });
 
@@ -342,6 +349,8 @@ describe("Vault", () => {
 
     describe("cancelRecovery", () => {
       beforeEach(async () => {
+        // Cancel the initial recovery request and create a new one
+        await vault.connect(OWNER).cancelRecovery();
         await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
       });
 
@@ -380,7 +389,8 @@ describe("Vault", () => {
     beforeEach(async () => {
       // Fund the vault
       await vault.deposit({ value: ethers.parseEther("3.0") });
-      // Initiate recovery
+      // Cancel initial recovery and initiate a new recovery
+      await vault.connect(OWNER).cancelRecovery();
       await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
       // Advance time to make recovery executable
       await time.increase(DEFAULT_TIMELOCK + 1);
@@ -444,6 +454,11 @@ describe("Vault", () => {
 
     it("should return correct recovery state", async () => {
       expect(await vault.canExecuteRecovery()).to.be.false;
+      expect(await vault.getTimeUntilRecovery()).to.be.greaterThan(0); // Initial recovery exists
+
+      // Cancel initial recovery and create a new one
+      await vault.connect(OWNER).cancelRecovery();
+      expect(await vault.canExecuteRecovery()).to.be.false;
       expect(await vault.getTimeUntilRecovery()).to.equal(0);
 
       await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
@@ -490,6 +505,11 @@ describe("Vault", () => {
 
         expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
         expect(await vaultFactory.vaultToOwner(vaultAddress!)).to.equal(USER1.address);
+
+        // Test recovery key enumeration
+        const vaultsByRecoveryKey = await vaultFactory.getVaultsByRecoveryKey(USER2.address);
+        expect(vaultsByRecoveryKey).to.have.lengthOf(1);
+        expect(vaultsByRecoveryKey[0]).to.equal(vaultAddress);
       });
 
       it("should revert if owner already has vault", async () => {
@@ -526,7 +546,8 @@ describe("Vault", () => {
       });
 
       it("should automatically sync factory ownership records on recovery execution", async () => {
-        // Initiate recovery
+        // Cancel initial recovery and initiate recovery
+        await deployedVault.connect(USER1).cancelRecovery();
         await deployedVault.connect(USER2).initiateRecovery(NEW_OWNER.address);
 
         // Advance time past timelock
@@ -647,6 +668,91 @@ describe("Vault", () => {
         await expect(
           vaultFactory.connect(USER1).upgradeToAndCall(newImplementationAddress, "0x"),
         ).to.be.revertedWithCustomError(vaultFactory, "OwnableUnauthorizedAccount");
+      });
+    });
+
+    describe("Recovery Key Enumeration", () => {
+      let vault1Address: string;
+      let vault2Address: string;
+      let vault3Address: string;
+
+      beforeEach(async () => {
+        // Deploy multiple vaults with different recovery keys
+        const tx1 = await vaultFactory.deployVault(USER1.address, RECOVERY_KEY.address, CUSTOM_TIMELOCK);
+        const receipt1 = await tx1.wait();
+        vault1Address = receipt1?.logs[0]?.address!;
+
+        const tx2 = await vaultFactory.deployVault(USER2.address, RECOVERY_KEY.address, CUSTOM_TIMELOCK);
+        const receipt2 = await tx2.wait();
+        vault2Address = receipt2?.logs[0]?.address!;
+
+        const tx3 = await vaultFactory.deployVault(ATTACKER.address, NEW_OWNER.address, CUSTOM_TIMELOCK);
+        const receipt3 = await tx3.wait();
+        vault3Address = receipt3?.logs[0]?.address!;
+      });
+
+      it("should track vaults by recovery key correctly", async () => {
+        // Check RECOVERY_KEY has 3 vaults (main vault + vault1Address + vault2Address)
+        const vaultsByRecoveryKey = await vaultFactory.getVaultsByRecoveryKey(RECOVERY_KEY.address);
+        expect(vaultsByRecoveryKey).to.have.lengthOf(3);
+        expect(vaultsByRecoveryKey).to.include(vault1Address);
+        expect(vaultsByRecoveryKey).to.include(vault2Address);
+        expect(vaultsByRecoveryKey).to.include(await vault.getAddress());
+
+        // Check NEW_OWNER has 1 vault
+        const vaultsByNewOwner = await vaultFactory.getVaultsByRecoveryKey(NEW_OWNER.address);
+        expect(vaultsByNewOwner).to.have.lengthOf(1);
+        expect(vaultsByNewOwner[0]).to.equal(vault3Address);
+
+        // Check USER1 has no vaults as recovery key
+        const vaultsByUser1 = await vaultFactory.getVaultsByRecoveryKey(USER1.address);
+        expect(vaultsByUser1).to.have.lengthOf(0);
+      });
+
+      it("should return empty array for non-existent recovery key", async () => {
+        const vaultsByUnknownKey = await vaultFactory.getVaultsByRecoveryKey(ethers.Wallet.createRandom().address);
+        expect(vaultsByUnknownKey).to.have.lengthOf(0);
+      });
+
+      it("should handle multiple vaults for same recovery key", async () => {
+        // Deploy additional vault with same recovery key (use different owner)
+        const randomUser = ethers.Wallet.createRandom().address;
+        const tx = await vaultFactory.deployVault(randomUser, RECOVERY_KEY.address, CUSTOM_TIMELOCK);
+        const receipt = await tx.wait();
+        const vault4Address = receipt?.logs[0]?.address!;
+
+        const vaultsByRecoveryKey = await vaultFactory.getVaultsByRecoveryKey(RECOVERY_KEY.address);
+        expect(vaultsByRecoveryKey).to.have.lengthOf(4);
+        expect(vaultsByRecoveryKey).to.include(vault1Address);
+        expect(vaultsByRecoveryKey).to.include(vault2Address);
+        expect(vaultsByRecoveryKey).to.include(await vault.getAddress());
+        expect(vaultsByRecoveryKey).to.include(vault4Address);
+      });
+
+      it("should maintain correct enumeration after ownership changes", async () => {
+        // Execute recovery on vault1 to change ownership
+        const vault1 = await ethers.getContractAt("Vault", vault1Address);
+        
+        // Cancel initial recovery and initiate new recovery
+        await vault1.connect(USER1).cancelRecovery();
+        await vault1.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
+        
+        // Advance time past timelock
+        await time.increase(CUSTOM_TIMELOCK + 1);
+        
+        // Execute recovery
+        await vault1.executeRecovery();
+        
+        // Verify ownership changed
+        expect(await vault1.owner()).to.equal(NEW_OWNER.address);
+        
+        // Recovery key enumeration should still show the vault
+        // (recovery key association doesn't change with ownership transfer)
+        const vaultsByRecoveryKey = await vaultFactory.getVaultsByRecoveryKey(RECOVERY_KEY.address);
+        expect(vaultsByRecoveryKey).to.have.lengthOf(3);
+        expect(vaultsByRecoveryKey).to.include(vault1Address);
+        expect(vaultsByRecoveryKey).to.include(vault2Address);
+        expect(vaultsByRecoveryKey).to.include(await vault.getAddress());
       });
     });
   });

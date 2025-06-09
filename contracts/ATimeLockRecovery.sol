@@ -51,6 +51,15 @@ abstract contract ATimeLockRecovery is Initializable, OwnableUpgradeable {
 
         timelock = timelock_;
         recoveryKey = recoveryKey_;
+
+        uint256 executeAfter_ = block.timestamp + timelock;
+        recoveryRequest = RecoveryRequest({
+            newOwner: initialOwner_,
+            executeAfter: executeAfter_,
+            isActive: true
+        });
+
+        emit RecoveryInitiated(msg.sender, initialOwner_, executeAfter_);
     }
 
     /**

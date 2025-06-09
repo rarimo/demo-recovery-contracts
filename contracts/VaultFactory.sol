@@ -7,6 +7,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import {Vault} from "./Vault.sol";
 
@@ -16,7 +17,9 @@ import {IVaultFactory} from "./interfaces/IVaultFactory.sol";
  * @title VaultFactory
  * @notice Factory contract for deploying Vault instances using CREATE2
  */
-contract VaultFactory is IVaultFactory, Initializable, OwnableUpgradeable, UUPSUpgradeable {
+contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
     /// @notice Implementation address for Vault contracts
     address public vaultImplementation;
 
@@ -25,6 +28,9 @@ contract VaultFactory is IVaultFactory, Initializable, OwnableUpgradeable, UUPSU
 
     /// @notice Mapping from vault address to owner
     mapping(address => address) public vaultToOwner;
+
+    /// @notice Mapping from recovery key to set of vaults they can recover
+    mapping(address => EnumerableSet.AddressSet) private _vaultsByRecoveryKey;
 
     event VaultDeployed(address indexed vault, address indexed owner);
     event VaultOwnerChanged(address indexed vault, address indexed newOwner);
@@ -71,6 +77,8 @@ contract VaultFactory is IVaultFactory, Initializable, OwnableUpgradeable, UUPSU
         vaultsByOwner[owner_] = address(vault);
         vaultToOwner[address(vault)] = owner_;
 
+        _vaultsByRecoveryKey[recoveryKey_].add(address(vault));
+
         emit VaultDeployed(address(vault), owner_);
 
         return address(vault);
@@ -92,6 +100,13 @@ contract VaultFactory is IVaultFactory, Initializable, OwnableUpgradeable, UUPSU
 
             emit VaultOwnerChanged(vault_, newOwner_);
         }
+    }
+
+    /**
+     * @notice Get all vaults that can be recovered by a specific recovery key
+     */
+    function getVaultsByRecoveryKey(address recoveryKey_) external view returns (address[] memory) {
+        return _vaultsByRecoveryKey[recoveryKey_].values();
     }
 
     /**
