@@ -93,7 +93,7 @@ contract Vault is ATimeLockRecovery {
     }
 
     /**
-     * @notice Withdraw all ETH from the vault (only owner)
+     * @notice Withdraw all ETH from the vault
      * @param to_ The address to send ETH to
      */
     function withdrawAll(address payable to_) external onlyOwner {
@@ -170,6 +170,7 @@ contract Vault is ATimeLockRecovery {
 
         // Sync with factory if available
         if (factory != address(0)) {
+            // solhint-disable-next-line no-empty-blocks
             try IVaultFactory(factory).syncOwner(address(this)) {} catch {}
         }
 

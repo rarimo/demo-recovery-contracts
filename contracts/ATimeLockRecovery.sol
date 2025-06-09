@@ -153,7 +153,7 @@ abstract contract ATimeLockRecovery is Initializable, OwnableUpgradeable {
 
     /**
      * @notice Get time remaining until recovery can be executed
-     * @return Time in seconds until recovery can be executed (0 if can execute now)
+     * @return Time in seconds until recovery can be executed
      */
     function getTimeUntilRecovery() external view returns (uint256) {
         if (!recoveryRequest.isActive) {

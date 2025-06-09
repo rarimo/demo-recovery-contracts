@@ -196,5 +196,6 @@ contract VaultFactory is IVaultFactory, Initializable, OwnableUpgradeable, UUPSU
      * @param newImplementation_ The new implementation address
      * @dev Only callable by factory owner
      */
+    // solhint-disable-next-line no-empty-blocks
     function _authorizeUpgrade(address newImplementation_) internal override onlyOwner {}
 }
