@@ -9,5 +9,9 @@ export async function getConfig() {
     return await import("./rarimo-beta");
   }
 
+  if (hre.network.name == "sepolia") {
+    return await import("./sepolia");
+  }
+
   throw new Error(`Config for network ${hre.network.name} is not specified`);
 }

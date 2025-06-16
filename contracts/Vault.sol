@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {EIP712Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 
 import {ATimeLockRecovery} from "./ATimeLockRecovery.sol";
 
@@ -12,11 +16,16 @@ import {IVaultFactory} from "./interfaces/IVaultFactory.sol";
  * @notice This contract holds ETH that is managed by the owner of the contract.
  * @dev Inherits time-locked recovery functionality from ATimeLockRecovery
  */
-contract Vault is ATimeLockRecovery {
+contract Vault is ATimeLockRecovery, EIP712Upgradeable, Nonces {
     using Address for address payable;
+    using MessageHashUtils for bytes32;
 
     /// @notice The factory contract that deployed this vault
     address public factory;
+
+    /// @notice EIP712 typehash for emergency withdrawal
+    bytes32 public constant EMERGENCY_WITHDRAW_TYPEHASH =
+        keccak256("EmergencyWithdraw(address to,uint256 amount,uint256 nonce)");
 
     event Deposit(address indexed from, uint256 amount);
     event Withdrawal(address indexed to, uint256 amount);
@@ -43,6 +52,8 @@ contract Vault is ATimeLockRecovery {
         uint256 timelock_,
         address factory_
     ) external initializer {
+        __EIP712_init("ATimeLockRecovery", "v1.0.0");
+
         require(initialOwner_ != address(0), InvalidInitialOwner());
         require(recoveryKey_ != address(0), InvalidRecoveryKeyInit());
         require(timelock_ != 0, InvalidTimelockInit());
@@ -110,12 +121,24 @@ contract Vault is ATimeLockRecovery {
      * @notice Emergency withdrawal function that can be used during recovery
      * @param to_ The address to send ETH to
      * @param amount_ The amount of ETH to withdraw
-     * @dev This function can be called by the recovery key in emergency situations
+     * @param signature_ The signature from the recovery key authorizing this withdrawal
+     * @dev This function can be called by anyone with a valid signature from the recovery key
      */
-    function emergencyWithdraw(address payable to_, uint256 amount_) external {
-        // Only allow emergency withdrawal if there's an active recovery that can be executed
+    function emergencyWithdraw(
+        address payable to_,
+        uint256 amount_,
+        bytes memory signature_
+    ) external {
         require(canExecuteRecovery(), EmergencyWithdrawalNotAvailable());
-        require(msg.sender == recoveryKey, OnlyRecoveryKeyCanEmergencyWithdraw());
+
+        uint256 currentNonce = _useNonce(recoveryKey);
+
+        // Verify EIP712 signature
+        bytes32 hash_ = hashEmergencyWithdraw(to_, amount_, currentNonce);
+        require(
+            SignatureChecker.isValidSignatureNow(recoveryKey, hash_, signature_),
+            OnlyRecoveryKeyCanEmergencyWithdraw()
+        );
 
         require(amount_ != 0, InvalidAmount());
         require(
@@ -145,6 +168,25 @@ contract Vault is ATimeLockRecovery {
      */
     function hasSufficientBalance(uint256 amount_) external view returns (bool) {
         return address(this).balance >= amount_;
+    }
+
+    /**
+     * @notice Get the current nonce for EIP712 signatures for the recovery key
+     * @return The current nonce value for the recovery key
+     */
+    function getRecoveryKeyNonce() external view returns (uint256) {
+        return nonces(recoveryKey);
+    }
+
+    function hashEmergencyWithdraw(
+        address to_,
+        uint256 amount_,
+        uint256 nonce_
+    ) public view returns (bytes32) {
+        return
+            _hashTypedDataV4(
+                keccak256(abi.encode(EMERGENCY_WITHDRAW_TYPEHASH, to_, amount_, nonce_))
+            );
     }
 
     /**

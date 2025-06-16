@@ -11,7 +11,6 @@ export = async (deployer: Deployer) => {
 
   await vaultFactory.__VaultFactory_init(await vaultImplementation.getAddress(), config.factoryOwner);
 
-  // Report deployed contracts
   await Reporter.reportContractsMD(
     ["Vault Implementation", await vaultImplementation.getAddress()],
     ["VaultFactory", await vaultFactory.getAddress()],

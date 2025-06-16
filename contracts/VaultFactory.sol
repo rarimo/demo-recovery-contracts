@@ -105,7 +105,9 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /**
      * @notice Get all vaults that can be recovered by a specific recovery key
      */
-    function getVaultsByRecoveryKey(address recoveryKey_) external view returns (address[] memory) {
+    function getVaultsByRecoveryKey(
+        address recoveryKey_
+    ) external view returns (address[] memory) {
         return _vaultsByRecoveryKey[recoveryKey_].values();
     }
 

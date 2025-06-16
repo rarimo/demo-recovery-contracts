@@ -6,9 +6,24 @@ import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
 import { ethers } from "hardhat";
 
-import { Reverter } from "./helpers";
+import { EmergencyWithdrawData, Reverter, getEmergencyWithdrawSignature } from "./helpers";
 
 describe("Vault", () => {
+  // import {ErrorFragment} from "ethers";
+  // it.only("look for error", async () => {
+  //     //
+  //     const contractInterface = vault.interface;
+  //
+  //     for (const fragment of contractInterface.fragments) {
+  //       if (fragment.type === "error") {
+  //         try {
+  //           console.log(contractInterface.decodeErrorResult(fragment as ErrorFragment, "0xa2708c6f"));
+  //           console.log(fragment);
+  //         } catch {}
+  //       }
+  //     }
+  //   });
+
   const reverter = new Reverter();
 
   let OWNER: SignerWithAddress;
@@ -396,11 +411,20 @@ describe("Vault", () => {
       await time.increase(DEFAULT_TIMELOCK + 1);
     });
 
-    it("should allow recovery key to emergency withdraw when recovery is executable", async () => {
+    it("should allow emergency withdraw with valid signature when recovery is executable", async () => {
       const withdrawAmount = ethers.parseEther("1.0");
       const initialBalance = await ethers.provider.getBalance(USER1.address);
+      const nonce = await vault.getRecoveryKeyNonce();
 
-      await expect(vault.connect(RECOVERY_KEY).emergencyWithdraw(USER1.address, withdrawAmount))
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: nonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      await expect(vault.emergencyWithdraw(USER1.address, withdrawAmount, signature))
         .to.emit(vault, "EmergencyWithdrawal")
         .withArgs(USER1.address, withdrawAmount);
 
@@ -408,32 +432,174 @@ describe("Vault", () => {
       expect(await ethers.provider.getBalance(USER1.address)).to.equal(initialBalance + withdrawAmount);
     });
 
+    it("should increment nonce after successful emergency withdrawal", async () => {
+      const withdrawAmount = ethers.parseEther("1.0");
+      const initialNonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: initialNonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      await vault.emergencyWithdraw(USER1.address, withdrawAmount, signature);
+
+      const finalNonce = await vault.getRecoveryKeyNonce();
+      expect(finalNonce).to.equal(initialNonce + 1n);
+    });
+
     it("should revert if recovery is not executable", async () => {
       // Cancel recovery to make it not executable
       await vault.connect(OWNER).cancelRecovery();
 
-      await expect(
-        vault.connect(RECOVERY_KEY).emergencyWithdraw(USER1.address, ethers.parseEther("1.0")),
-      ).to.be.revertedWithCustomError(vault, "EmergencyWithdrawalNotAvailable");
+      const withdrawAmount = ethers.parseEther("1.0");
+      const nonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: nonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      await expect(vault.emergencyWithdraw(USER1.address, withdrawAmount, signature)).to.be.revertedWithCustomError(
+        vault,
+        "EmergencyWithdrawalNotAvailable",
+      );
     });
 
-    it("should revert if non-recovery-key tries emergency withdrawal", async () => {
+    it("should revert with invalid signature", async () => {
+      const withdrawAmount = ethers.parseEther("1.0");
+      const nonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: nonce,
+      };
+
+      // Sign with wrong signer (ATTACKER instead of RECOVERY_KEY)
+      const invalidSignature = await getEmergencyWithdrawSignature(vault, ATTACKER, withdrawData);
+
       await expect(
-        vault.connect(ATTACKER).emergencyWithdraw(ATTACKER.address, ethers.parseEther("1.0")),
+        vault.emergencyWithdraw(USER1.address, withdrawAmount, invalidSignature),
       ).to.be.revertedWithCustomError(vault, "OnlyRecoveryKeyCanEmergencyWithdraw");
     });
 
+    it("should revert with wrong nonce", async () => {
+      const withdrawAmount = ethers.parseEther("1.0");
+      const currentNonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: currentNonce + 1n, // Wrong nonce
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      await expect(vault.emergencyWithdraw(USER1.address, withdrawAmount, signature)).to.be.revertedWithCustomError(
+        vault,
+        "OnlyRecoveryKeyCanEmergencyWithdraw",
+      );
+    });
+
+    it("should revert with reused signature", async () => {
+      const withdrawAmount = ethers.parseEther("1.0");
+      const nonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: nonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      // First withdrawal should succeed
+      await vault.emergencyWithdraw(USER1.address, withdrawAmount, signature);
+
+      await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
+      await time.increase(DEFAULT_TIMELOCK + 1);
+
+      // Second withdrawal with same signature should fail
+      await expect(vault.emergencyWithdraw(USER1.address, withdrawAmount, signature)).to.be.revertedWithCustomError(
+        vault,
+        "OnlyRecoveryKeyCanEmergencyWithdraw",
+      );
+    });
+
     it("should revert on emergency withdrawal with zero amount", async () => {
-      await expect(vault.connect(RECOVERY_KEY).emergencyWithdraw(USER1.address, 0)).to.be.revertedWithCustomError(
+      const nonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: 0n,
+        nonce: nonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      await expect(vault.emergencyWithdraw(USER1.address, 0, signature)).to.be.revertedWithCustomError(
         vault,
         "InvalidAmount",
       );
     });
 
     it("should revert on emergency withdrawal exceeding balance", async () => {
-      await expect(
-        vault.connect(RECOVERY_KEY).emergencyWithdraw(USER1.address, ethers.parseEther("10.0")),
-      ).to.be.revertedWithCustomError(vault, "InsufficientBalance");
+      const excessiveAmount = ethers.parseEther("10.0");
+      const nonce = await vault.getRecoveryKeyNonce();
+
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: excessiveAmount,
+        nonce: nonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+
+      await expect(vault.emergencyWithdraw(USER1.address, excessiveAmount, signature)).to.be.revertedWithCustomError(
+        vault,
+        "InsufficientBalance",
+      );
+    });
+
+    it("should allow different recipients with proper signatures", async () => {
+      const withdrawAmount = ethers.parseEther("1.0");
+      const nonce1 = await vault.getRecoveryKeyNonce();
+
+      // First withdrawal to USER1
+      const withdrawData1: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: nonce1,
+      };
+
+      const signature1 = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData1);
+
+      await vault.emergencyWithdraw(USER1.address, withdrawAmount, signature1);
+
+      await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
+      await time.increase(DEFAULT_TIMELOCK + 1);
+
+      // Second withdrawal to USER2 (with incremented nonce)
+      const nonce2 = await vault.getRecoveryKeyNonce();
+      const withdrawData2: EmergencyWithdrawData = {
+        to: USER2.address,
+        amount: withdrawAmount,
+        nonce: nonce2,
+      };
+
+      const signature2 = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData2);
+
+      await expect(vault.emergencyWithdraw(USER2.address, withdrawAmount, signature2))
+        .to.emit(vault, "EmergencyWithdrawal")
+        .withArgs(USER2.address, withdrawAmount);
+
+      expect(await vault.getBalance()).to.equal(ethers.parseEther("1.0"));
     });
   });
 
@@ -470,6 +636,31 @@ describe("Vault", () => {
 
       expect(await vault.canExecuteRecovery()).to.be.true;
       expect(await vault.getTimeUntilRecovery()).to.equal(0);
+    });
+
+    it("should return correct recovery key nonce", async () => {
+      const initialNonce = await vault.getRecoveryKeyNonce();
+      expect(initialNonce).to.equal(0);
+
+      // Fund vault and set up emergency withdrawal conditions
+      await vault.deposit({ value: ethers.parseEther("2.0") });
+      await vault.connect(OWNER).cancelRecovery();
+      await vault.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
+      await time.increase(DEFAULT_TIMELOCK + 1);
+
+      // Perform emergency withdrawal to increment nonce
+      const withdrawAmount = ethers.parseEther("1.0");
+      const withdrawData: EmergencyWithdrawData = {
+        to: USER1.address,
+        amount: withdrawAmount,
+        nonce: initialNonce,
+      };
+
+      const signature = await getEmergencyWithdrawSignature(vault, RECOVERY_KEY, withdrawData);
+      await vault.emergencyWithdraw(USER1.address, withdrawAmount, signature);
+
+      const finalNonce = await vault.getRecoveryKeyNonce();
+      expect(finalNonce).to.equal(1);
     });
   });
 
@@ -732,20 +923,20 @@ describe("Vault", () => {
       it("should maintain correct enumeration after ownership changes", async () => {
         // Execute recovery on vault1 to change ownership
         const vault1 = await ethers.getContractAt("Vault", vault1Address);
-        
+
         // Cancel initial recovery and initiate new recovery
         await vault1.connect(USER1).cancelRecovery();
         await vault1.connect(RECOVERY_KEY).initiateRecovery(NEW_OWNER.address);
-        
+
         // Advance time past timelock
         await time.increase(CUSTOM_TIMELOCK + 1);
-        
+
         // Execute recovery
         await vault1.executeRecovery();
-        
+
         // Verify ownership changed
         expect(await vault1.owner()).to.equal(NEW_OWNER.address);
-        
+
         // Recovery key enumeration should still show the vault
         // (recovery key association doesn't change with ownership transfer)
         const vaultsByRecoveryKey = await vaultFactory.getVaultsByRecoveryKey(RECOVERY_KEY.address);
