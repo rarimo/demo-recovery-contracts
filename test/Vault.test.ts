@@ -56,7 +56,7 @@ describe("Vault", () => {
     await vaultFactory.__VaultFactory_init(await vaultImplementation.getAddress(), OWNER.address);
 
     // Deploy vault through factory
-    const tx = await vaultFactory.deployVault(OWNER.address, RECOVERY_KEY.address, DEFAULT_TIMELOCK);
+    const tx = await vaultFactory.connect(OWNER).deployVault(RECOVERY_KEY.address, DEFAULT_TIMELOCK);
     const receipt = await tx.wait();
     const vaultAddress = receipt?.logs[0]?.address;
     vault = await ethers.getContractAt("Vault", vaultAddress!);
@@ -79,18 +79,13 @@ describe("Vault", () => {
       expect(recoveryRequest.executeAfter).to.be.greaterThan(0);
     });
 
-    it("should revert if initialized with zero initial owner", async () => {
-      const tx = vaultFactory.deployVault(ethers.ZeroAddress, RECOVERY_KEY.address, DEFAULT_TIMELOCK);
-      await expect(tx).to.be.revertedWithCustomError(vault, "InvalidInitialOwner");
-    });
-
     it("should revert if initialized with zero recovery key", async () => {
-      const tx = vaultFactory.deployVault(USER1.address, ethers.ZeroAddress, DEFAULT_TIMELOCK);
+      const tx = vaultFactory.connect(USER1).deployVault(ethers.ZeroAddress, DEFAULT_TIMELOCK);
       await expect(tx).to.be.revertedWithCustomError(vault, "InvalidRecoveryKeyInit");
     });
 
     it("should revert if initialized with zero timelock", async () => {
-      const tx = vaultFactory.deployVault(USER1.address, RECOVERY_KEY.address, 0);
+      const tx = vaultFactory.connect(USER1).deployVault(RECOVERY_KEY.address, 0);
       await expect(tx).to.be.revertedWithCustomError(vault, "InvalidTimelockInit");
     });
 
@@ -680,7 +675,7 @@ describe("Vault", () => {
 
     describe("Vault Deployment", () => {
       it("should deploy vault with correct parameters", async () => {
-        const tx = await vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK);
+        const tx = await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
         const receipt = await tx.wait();
 
         await expect(tx).to.emit(vaultFactory, "VaultDeployed");
@@ -704,10 +699,10 @@ describe("Vault", () => {
       });
 
       it("should revert if owner already has vault", async () => {
-        await vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK);
+        await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
 
         await expect(
-          vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK),
+          vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK),
         ).to.be.revertedWithCustomError(vaultFactory, "VaultAlreadyExists");
       });
 
@@ -717,7 +712,7 @@ describe("Vault", () => {
           USER1.address,
         );
 
-        const tx = await vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK);
+        const tx = await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
         const receipt = await tx.wait();
         const actualAddress = receipt?.logs[0]?.address;
 
@@ -730,7 +725,7 @@ describe("Vault", () => {
       let vaultAddress: string;
 
       beforeEach(async () => {
-        const tx = await vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK);
+        const tx = await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
         const receipt = await tx.wait();
         vaultAddress = receipt?.logs[0]?.address!;
         deployedVault = await ethers.getContractAt("Vault", vaultAddress);
@@ -798,7 +793,7 @@ describe("Vault", () => {
 
     describe("View Functions", () => {
       beforeEach(async () => {
-        await vaultFactory.deployVault(USER1.address, USER2.address, CUSTOM_TIMELOCK);
+        await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
       });
 
       it("should return correct vault by owner", async () => {
@@ -869,15 +864,15 @@ describe("Vault", () => {
 
       beforeEach(async () => {
         // Deploy multiple vaults with different recovery keys
-        const tx1 = await vaultFactory.deployVault(USER1.address, RECOVERY_KEY.address, CUSTOM_TIMELOCK);
+        const tx1 = await vaultFactory.connect(USER1).deployVault(RECOVERY_KEY.address, CUSTOM_TIMELOCK);
         const receipt1 = await tx1.wait();
         vault1Address = receipt1?.logs[0]?.address!;
 
-        const tx2 = await vaultFactory.deployVault(USER2.address, RECOVERY_KEY.address, CUSTOM_TIMELOCK);
+        const tx2 = await vaultFactory.connect(USER2).deployVault(RECOVERY_KEY.address, CUSTOM_TIMELOCK);
         const receipt2 = await tx2.wait();
         vault2Address = receipt2?.logs[0]?.address!;
 
-        const tx3 = await vaultFactory.deployVault(ATTACKER.address, NEW_OWNER.address, CUSTOM_TIMELOCK);
+        const tx3 = await vaultFactory.connect(ATTACKER).deployVault(NEW_OWNER.address, CUSTOM_TIMELOCK);
         const receipt3 = await tx3.wait();
         vault3Address = receipt3?.logs[0]?.address!;
       });
@@ -906,9 +901,7 @@ describe("Vault", () => {
       });
 
       it("should handle multiple vaults for same recovery key", async () => {
-        // Deploy additional vault with same recovery key (use different owner)
-        const randomUser = ethers.Wallet.createRandom().address;
-        const tx = await vaultFactory.deployVault(randomUser, RECOVERY_KEY.address, CUSTOM_TIMELOCK);
+        const tx = await vaultFactory.connect(NEW_OWNER).deployVault(RECOVERY_KEY.address, CUSTOM_TIMELOCK);
         const receipt = await tx.wait();
         const vault4Address = receipt?.logs[0]?.address!;
 

@@ -56,16 +56,16 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     /**
      * @notice Deploy a new Vault for the specified owner
-     * @param owner_ The address that will own the vault
      * @param recoveryKey_ The address that can initiate recovery
      * @param timelock_ The timelock duration for recovery (0 for default 7 days)
      * @return vault_ The address of the deployed vault
      */
     function deployVault(
-        address owner_,
         address recoveryKey_,
         uint256 timelock_
     ) external returns (address vault_) {
+        address owner_ = _msgSender();
+
         require(vaultsByOwner[owner_] == address(0), VaultAlreadyExists(vaultsByOwner[owner_]));
 
         Vault vault = Vault(
