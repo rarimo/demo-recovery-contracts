@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -17,14 +18,14 @@ import {IVaultFactory} from "./interfaces/IVaultFactory.sol";
  * @title VaultFactory
  * @notice Factory contract for deploying Vault instances using CREATE2
  */
-contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, Nonces {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     /// @notice Implementation address for Vault contracts
     address public vaultImplementation;
 
-    /// @notice Mapping from owner to their vault address
-    mapping(address => address) public vaultsByOwner;
+    /// @notice Mapping from owner to their vault addresses
+    mapping(address => EnumerableSet.AddressSet) private _vaultsByOwner;
 
     /// @notice Mapping from vault address to owner
     mapping(address => address) public vaultToOwner;
@@ -36,7 +37,6 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event VaultOwnerChanged(address indexed vault, address indexed newOwner);
     event ImplementationChanged(address indexed newImplementation);
 
-    error VaultAlreadyExists(address vault);
     error VaultNotFound();
     error Unauthorized(address caller, address owner);
 
@@ -66,15 +66,15 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ) external returns (address vault_) {
         address owner_ = _msgSender();
 
-        require(vaultsByOwner[owner_] == address(0), VaultAlreadyExists(vaultsByOwner[owner_]));
+        bytes32 salt_ = keccak256(abi.encodePacked(owner_, _useNonce(owner_)));
 
         Vault vault = Vault(
-            payable(_deploy2(vaultImplementation, bytes32(uint256(uint160(owner_)))))
+            payable(_deploy2(vaultImplementation, salt_))
         );
 
         vault.__Vault_init(owner_, recoveryKey_, timelock_, address(this));
 
-        vaultsByOwner[owner_] = address(vault);
+        _vaultsByOwner[owner_].add(address(vault));
         vaultToOwner[address(vault)] = owner_;
 
         _vaultsByRecoveryKey[recoveryKey_].add(address(vault));
@@ -91,11 +91,9 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         address newOwner_ = Vault(payable(vault_)).owner();
 
         if (newOwner_ != oldOwner_) {
-            if (vaultsByOwner[oldOwner_] == vault_) {
-                vaultsByOwner[oldOwner_] = address(0);
-            }
-
-            vaultsByOwner[newOwner_] = vault_;
+            _vaultsByOwner[oldOwner_].remove(vault_);
+            _vaultsByOwner[newOwner_].add(vault_);
+            
             vaultToOwner[vault_] = newOwner_;
 
             emit VaultOwnerChanged(vault_, newOwner_);
@@ -123,12 +121,31 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     /**
-     * @notice Get the vault address for a specific owner
+     * @notice Get all vault addresses for a specific owner
      * @param owner_ The owner address to query
-     * @return The vault address (zero if no vault exists)
+     * @return Array of vault addresses owned by the owner
      */
-    function getVaultByOwner(address owner_) external view returns (address) {
-        return vaultsByOwner[owner_];
+    function getVaultsByOwner(address owner_) external view returns (address[] memory) {
+        return _vaultsByOwner[owner_].values();
+    }
+
+    /**
+     * @notice Get the number of vaults owned by a specific owner
+     * @param owner_ The owner address to query
+     * @return The number of vaults owned
+     */
+    function getVaultCountByOwner(address owner_) external view returns (uint256) {
+        return _vaultsByOwner[owner_].length();
+    }
+
+    /**
+     * @notice Get a specific vault by owner and index
+     * @param owner_ The owner address to query
+     * @param index_ The index of the vault (0-based)
+     * @return The vault address at the specified index
+     */
+    function getVaultByOwnerAndIndex(address owner_, uint256 index_) external view returns (address) {
+        return _vaultsByOwner[owner_].at(index_);
     }
 
     /**
@@ -141,25 +158,35 @@ contract VaultFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     /**
-     * @notice Check if a vault exists for the given owner
+     * @notice Check if an owner has any vaults
      * @param owner_ The owner address to check
-     * @return True if vault exists
+     * @return True if owner has at least one vault
      */
-    function isVaultExists(address owner_) external view returns (bool) {
-        return vaultsByOwner[owner_] != address(0);
+    function hasVaults(address owner_) external view returns (bool) {
+        return _vaultsByOwner[owner_].length() > 0;
+    }
+
+    /**
+     * @notice Check if a specific vault exists for the given owner
+     * @param owner_ The owner address to check
+     * @param vault_ The vault address to check
+     * @return True if vault exists and is owned by the owner
+     */
+    function isVaultOwnedBy(address owner_, address vault_) external view returns (bool) {
+        return _vaultsByOwner[owner_].contains(vault_);
     }
 
     /**
      * @notice Predict the address of a vault before deployment
      * @param implementation_ The implementation address
-     * @param owner_ The owner address (used as salt)
+     * @param salt_ The salt for CREATE2
      * @return The predicted vault address
      */
     function predictVaultAddress(
         address implementation_,
-        address owner_
+        bytes32 salt_
     ) external view returns (address) {
-        return _predictAddress(implementation_, bytes32(uint256(uint160(owner_))));
+        return _predictAddress(implementation_, salt_);
     }
 
     /**

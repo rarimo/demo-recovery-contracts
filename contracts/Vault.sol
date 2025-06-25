@@ -131,10 +131,10 @@ contract Vault is ATimeLockRecovery, EIP712Upgradeable, Nonces {
     ) external {
         require(canExecuteRecovery(), EmergencyWithdrawalNotAvailable());
 
-        uint256 currentNonce = _useNonce(recoveryKey);
+        uint256 currentNonce_ = _useNonce(recoveryKey);
 
         // Verify EIP712 signature
-        bytes32 hash_ = hashEmergencyWithdraw(to_, amount_, currentNonce);
+        bytes32 hash_ = hashEmergencyWithdraw(to_, amount_, currentNonce_);
         require(
             SignatureChecker.isValidSignatureNow(recoveryKey, hash_, signature_),
             OnlyRecoveryKeyCanEmergencyWithdraw()
@@ -204,10 +204,8 @@ contract Vault is ATimeLockRecovery, EIP712Upgradeable, Nonces {
 
         address newOwner_ = recoveryRequest.newOwner;
 
-        // Clear the recovery request
         delete recoveryRequest;
 
-        // Transfer ownership
         _transferOwnership(newOwner_);
 
         // Sync with factory if available

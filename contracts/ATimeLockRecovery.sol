@@ -121,8 +121,6 @@ abstract contract ATimeLockRecovery is Initializable, OwnableUpgradeable {
         require(recoveryRequest.isActive, NoActiveRecovery());
         require(msg.sender == owner() || msg.sender == recoveryKey, UnauthorizedRecoveryAction());
 
-        recoveryRequest.isActive = false;
-
         delete recoveryRequest;
 
         emit RecoveryCanceled(msg.sender);

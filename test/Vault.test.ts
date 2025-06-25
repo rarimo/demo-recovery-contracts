@@ -689,7 +689,9 @@ describe("Vault", () => {
         expect(await deployedVault.timelock()).to.equal(CUSTOM_TIMELOCK);
         expect(await deployedVault.factory()).to.equal(await vaultFactory.getAddress());
 
-        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
+        const vaultsByOwner = await vaultFactory.getVaultsByOwner(USER1.address);
+        expect(vaultsByOwner).to.have.lengthOf(1);
+        expect(vaultsByOwner[0]).to.equal(vaultAddress);
         expect(await vaultFactory.vaultToOwner(vaultAddress!)).to.equal(USER1.address);
 
         // Test recovery key enumeration
@@ -698,18 +700,25 @@ describe("Vault", () => {
         expect(vaultsByRecoveryKey[0]).to.equal(vaultAddress);
       });
 
-      it("should revert if owner already has vault", async () => {
+      it("should allow owner to deploy multiple vaults", async () => {
         await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
+        
+        await expect(vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK))
+          .to.emit(vaultFactory, "VaultDeployed");
 
-        await expect(
-          vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK),
-        ).to.be.revertedWithCustomError(vaultFactory, "VaultAlreadyExists");
+        expect(await vaultFactory.getVaultCountByOwner(USER1.address)).to.equal(2);
+        expect(await vaultFactory.hasVaults(USER1.address)).to.be.true;
       });
 
       it("should predict vault addresses correctly", async () => {
+        const salt = ethers.keccak256(ethers.solidityPacked(
+          ["address", "uint256"], 
+          [USER1.address, 0]
+        ));
+        
         const predictedAddress = await vaultFactory.predictVaultAddress(
           await vaultImplementation.getAddress(),
-          USER1.address,
+          salt,
         );
 
         const tx = await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
@@ -748,8 +757,11 @@ describe("Vault", () => {
         expect(await deployedVault.owner()).to.equal(NEW_OWNER.address);
 
         // Check that factory records were automatically synced
-        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(ethers.ZeroAddress);
-        expect(await vaultFactory.vaultsByOwner(NEW_OWNER.address)).to.equal(vaultAddress);
+        const user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        const newOwnerVaults = await vaultFactory.getVaultsByOwner(NEW_OWNER.address);
+        expect(user1Vaults).to.have.lengthOf(0);
+        expect(newOwnerVaults).to.have.lengthOf(1);
+        expect(newOwnerVaults[0]).to.equal(vaultAddress);
         expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(NEW_OWNER.address);
       });
 
@@ -758,8 +770,11 @@ describe("Vault", () => {
         await deployedVault.connect(USER1).transferOwnership(NEW_OWNER.address);
 
         // Factory records should be stale initially
-        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
-        expect(await vaultFactory.vaultsByOwner(NEW_OWNER.address)).to.equal(ethers.ZeroAddress);
+        let user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        let newOwnerVaults = await vaultFactory.getVaultsByOwner(NEW_OWNER.address);
+        expect(user1Vaults).to.have.lengthOf(1);
+        expect(user1Vaults[0]).to.equal(vaultAddress);
+        expect(newOwnerVaults).to.have.lengthOf(0);
         expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(USER1.address);
 
         // Sync manually
@@ -768,8 +783,11 @@ describe("Vault", () => {
           .withArgs(vaultAddress, NEW_OWNER.address);
 
         // Factory records should now be updated
-        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(ethers.ZeroAddress);
-        expect(await vaultFactory.vaultsByOwner(NEW_OWNER.address)).to.equal(vaultAddress);
+        user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        newOwnerVaults = await vaultFactory.getVaultsByOwner(NEW_OWNER.address);
+        expect(user1Vaults).to.have.lengthOf(0);
+        expect(newOwnerVaults).to.have.lengthOf(1);
+        expect(newOwnerVaults[0]).to.equal(vaultAddress);
         expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(NEW_OWNER.address);
       });
 
@@ -786,7 +804,9 @@ describe("Vault", () => {
         await expect(vaultFactory.syncOwner(vaultAddress)).to.not.emit(vaultFactory, "VaultOwnerChanged");
 
         // Factory records should remain the same
-        expect(await vaultFactory.vaultsByOwner(USER1.address)).to.equal(vaultAddress);
+        const user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        expect(user1Vaults).to.have.lengthOf(1);
+        expect(user1Vaults[0]).to.equal(vaultAddress);
         expect(await vaultFactory.vaultToOwner(vaultAddress)).to.equal(USER1.address);
       });
     });
@@ -796,20 +816,47 @@ describe("Vault", () => {
         await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
       });
 
-      it("should return correct vault by owner", async () => {
-        const vaultAddress = await vaultFactory.getVaultByOwner(USER1.address);
-        expect(vaultAddress).to.not.equal(ethers.ZeroAddress);
-        expect(await vaultFactory.getVaultByOwner(USER2.address)).to.equal(ethers.ZeroAddress);
+      it("should return correct vaults by owner", async () => {
+        const user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        const user2Vaults = await vaultFactory.getVaultsByOwner(USER2.address);
+        
+        expect(user1Vaults).to.have.lengthOf(1);
+        expect(user1Vaults[0]).to.not.equal(ethers.ZeroAddress);
+        expect(user2Vaults).to.have.lengthOf(0);
       });
 
       it("should return correct owner by vault", async () => {
-        const vaultAddress = await vaultFactory.getVaultByOwner(USER1.address);
+        const user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        const vaultAddress = user1Vaults[0];
         expect(await vaultFactory.getOwnerByVault(vaultAddress)).to.equal(USER1.address);
       });
 
       it("should check vault existence correctly", async () => {
-        expect(await vaultFactory.isVaultExists(USER1.address)).to.be.true;
-        expect(await vaultFactory.isVaultExists(USER2.address)).to.be.false;
+        expect(await vaultFactory.hasVaults(USER1.address)).to.be.true;
+        expect(await vaultFactory.hasVaults(USER2.address)).to.be.false;
+      });
+
+      it("should return correct vault count by owner", async () => {
+        expect(await vaultFactory.getVaultCountByOwner(USER1.address)).to.equal(1);
+        expect(await vaultFactory.getVaultCountByOwner(USER2.address)).to.equal(0);
+        
+        // Deploy another vault for USER1
+        await vaultFactory.connect(USER1).deployVault(USER2.address, CUSTOM_TIMELOCK);
+        expect(await vaultFactory.getVaultCountByOwner(USER1.address)).to.equal(2);
+      });
+
+      it("should return vault by owner and index", async () => {
+        const user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        const vaultByIndex = await vaultFactory.getVaultByOwnerAndIndex(USER1.address, 0);
+        expect(vaultByIndex).to.equal(user1Vaults[0]);
+      });
+
+      it("should check if vault is owned by specific owner", async () => {
+        const user1Vaults = await vaultFactory.getVaultsByOwner(USER1.address);
+        const vaultAddress = user1Vaults[0];
+        
+        expect(await vaultFactory.isVaultOwnedBy(USER1.address, vaultAddress)).to.be.true;
+        expect(await vaultFactory.isVaultOwnedBy(USER2.address, vaultAddress)).to.be.false;
       });
     });
 
